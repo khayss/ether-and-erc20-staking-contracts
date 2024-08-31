@@ -8,19 +8,20 @@ contract MyTokenStaking {
         uint256 stakeAmount;
         uint256 startTime;
         uint256 endTime;
+        uint256 lastClaimedTime;
         bool isStaking;
     }
 
     mapping(address => Staker) private _stakers;
     uint256 private _totalStake;
-    uint256 private _totalRewards;
-    uint256 private _rewardPerSecond;
-    uint256 private _maxStakeTime;
     uint256 private _maxStakeAmount;
-    uint256 private _stakeStart;
     uint256 private _maxDuration;
-    address private immutable _token;
+    address private _admin;
+    uint256 private immutable _rewardsPerTokenPerSecond;
+    uint8 private immutable _annualInterestPercent;
+    uint8 private constant REWARD_PERCENTAGE_DECIMALS = 18;
     bool private _isActive;
+    address private immutable _token;
 
     error MyTokenStaking_CannotStakeZero();
     error MyTokenStaking_RewardsCannotBeZero();
@@ -39,8 +40,19 @@ contract MyTokenStaking {
     event RewardClaim(address indexed staker, uint256 indexed amount);
     event Unstake(address indexed staker, uint256 indexed amount);
 
-    constructor(address token) {
+    constructor(
+        address token,
+        uint8 annualInterestPercent,
+        uint256 maxDuration,
+        address admin
+    ) {
         _token = token;
+        _annualInterestPercent = annualInterestPercent;
+        _rewardsPerTokenPerSecond =
+            (annualInterestPercent * 10 ** REWARD_PERCENTAGE_DECIMALS) /
+            (365 * 24 * 60 * 60);
+        _maxDuration = maxDuration;
+        _admin = admin;
     }
 
     function stake(
@@ -72,6 +84,7 @@ contract MyTokenStaking {
         if (!staker.isStaking) {
             staker.isStaking = true;
             staker.startTime = block.timestamp;
+            staker.lastClaimedTime = block.timestamp;
             staker.endTime = block.timestamp + stakeDuration;
         }
 
@@ -104,6 +117,7 @@ contract MyTokenStaking {
         staker.stakeAmount = 0;
         staker.startTime = 0;
         staker.endTime = 0;
+        staker.lastClaimedTime = 0;
 
         _totalStake = _totalStake - amount;
 
@@ -124,6 +138,14 @@ contract MyTokenStaking {
         // check if the rewards are not zero
         if (rewards == 0) revert MyTokenStaking_NoRewardsToClaim();
 
+        Staker storage staker = _stakers[msg.sender];
+
+        if (staker.endTime < block.timestamp) {
+            staker.lastClaimedTime = block.timestamp;
+        } else {
+            staker.lastClaimedTime = staker.endTime;
+        }
+
         bool transferSuccess = IERC20(_token).transfer(msg.sender, rewards);
         if (!transferSuccess) revert MyTokenStaking_RewardClaimFailed();
 
@@ -132,11 +154,25 @@ contract MyTokenStaking {
         emit RewardClaim(msg.sender, rewards);
     }
 
-    function calculateRewards(address _address) public pure returns (uint256) {
-        if (_address == address(0))
-            revert MyTokenStaking_AddressZeroNotAllowed();
+    function calculateRewards(address _address) public view returns (uint256) {
+        // calculate rewards
+        Staker memory staker = _stakers[_address];
 
-        return 1;
+        if (!staker.isStaking) return 0;
+
+        uint256 timeStaked;
+
+        if (staker.endTime < block.timestamp) {
+            timeStaked = staker.endTime - staker.lastClaimedTime;
+        } else {
+            timeStaked = block.timestamp - staker.lastClaimedTime;
+        }
+
+        uint256 rewards = (staker.stakeAmount *
+            timeStaked *
+            _rewardsPerTokenPerSecond) / (10 ** REWARD_PERCENTAGE_DECIMALS);
+
+        return rewards;
     }
 
     function checkAddressZero(address _address) private pure {
